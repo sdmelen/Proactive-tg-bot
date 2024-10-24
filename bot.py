@@ -136,7 +136,7 @@ class TelegramBot:
                 print(f"GPT Error during verification: {str(e)}")
                 await update.message.reply_text(
                     f"Отлично! Я нашел тебя в базе.\n"
-                    f"Твой текущий прогресс: {student_data.progress}%\n\n"
+                    f"Твой текущий прогресс: {student_data.progress * 100}%\n\n"
                     "Продолжай в том же духе! Я здесь, чтобы помочь тебе в обучении."
                 )
 
@@ -233,7 +233,7 @@ if __name__ == '__main__':
     config = BotConfig(
         bot_key='',
         gpt_key='',
-        excel_file_path='C:/Users/HUAWEI/Desktop/py/Proactive-tg-bot/Аналитика.xlsx',
+        excel_file_path='C:/Users/dbezz/Desktop/AUIMIT/Proactive-tg-bot/Аналитика.xlsx',
         role_file='role.txt',
         model="gpt-4o-mini",
         temperature=0.5,
