@@ -10,8 +10,8 @@ from config.config import BotConfig
 
 @dataclass
 class StudentData:
-    name: str
-    progress: float
+    email: str
+    delta_progress: float
     last_update: datetime.datetime = field(default_factory=datetime.datetime.now)
 
 class ExcelHandler:
@@ -23,7 +23,7 @@ class ExcelHandler:
         """
         self.file_path = config.excel_file_path
         self.update_interval = config.update_interval
-        self.required_columns = ["1 поток", "1 модуль"]
+        self.required_columns = ["email", "Delta Progress"]
         self.students_data: Dict[str, StudentData] = {}
         self.last_update: Optional[datetime.datetime] = None
         # Сразу загружаем данные при инициализации
@@ -39,8 +39,9 @@ class ExcelHandler:
             print("Excel columns found:", df.columns.tolist())
             
             # Проверяем наличие требуемых столбцов
-            if "1 поток" not in df.columns:
-                print("Error: Column '1 поток' not found in Excel file")
+            if not all(col in df.columns for col in self.required_columns):
+                missing = [col for col in self.required_columns if col not in df.columns]
+                print(f"Error: Columns {missing} not found in Excel file")
                 return False
                 
             df = df[self.required_columns].dropna().reset_index(drop=True)
@@ -50,16 +51,16 @@ class ExcelHandler:
             # Обновление словаря с данными студентов
             self.students_data.clear()
             for _, row in df.iterrows():
-                student_name = str(row["1 поток"]).strip().lower()
-                print(f"Processing student: {student_name}")
-                self.students_data[student_name] = StudentData(
-                    name=student_name,
-                    progress=float(row["1 модуль"]) if pd.notnull(row["1 модуль"]) else 0.0
+                email = str(row["email"]).strip().lower()
+                print(f"Processing student: {email}")
+                self.students_data[email] = StudentData(
+                    email=email,
+                    delta_progress=float(row["Delta Progress"]) if pd.notnull(row["Delta Progress"]) else 0.0
                 )
             
             print("\nProcessed students in memory:")
-            for name, data in self.students_data.items():
-                print(f"- {name}: {data.progress}%")
+            for email, data in self.students_data.items():
+                print(f"- {email}: DP={data.delta_progress}")
             
             self.last_update = datetime.datetime.now()
             return True
@@ -74,67 +75,70 @@ class ExcelHandler:
         """
         return self.update_data_sync()
 
-    def get_student_progress(self, full_name: str) -> Optional[StudentData]:
+    def get_student_progress(self, email: str) -> Optional[StudentData]:
         """
-        Получение прогресса студента по имени
+        Получение прогресса студента по email
         Args:
-            full_name: Полное имя студента
+            email: Email студента
         Returns:
             Optional[StudentData]: Данные студента или None
         """
-        search_name = full_name.strip().lower()
-        print(f"\nSearching for student: {search_name}")
-        print("Available students:", list(self.students_data.keys()))
+        search_email = email.strip().lower()
+        print(f"\nSearching for student: {search_email}")
+        print("Available emails:", list(self.students_data.keys()))
         
         # Точное совпадение
-        if search_name in self.students_data:
-            print(f"Exact match found for: {search_name}")
-            return self.students_data[search_name]
-            
-        # Поиск частичного совпадения
-        for name in self.students_data:
-            if search_name in name or name in search_name:
-                print(f"Partial match found: {name}")
-                return self.students_data[name]
+        if search_email in self.students_data:
+            print(f"Exact match found for: {search_email}")
+            return self.students_data[search_email]
         
-        print(f"No match found for: {search_name}")
+        print(f"No match found for: {search_email}")
         return None
 
-
-    def generate_progress_prompt(self, progress: float) -> str:
+    def generate_progress_prompt(self, delta_progress: float) -> str:
         """
-        Генерация промпта для OpenAI в зависимости от прогресса
+        Генерация промпта для OpenAI в зависимости от значения Delta Progress
         Args:
-            progress: Процент прогресса
+            delta_progress: Значение Delta Progress
         Returns:
             str: Промпт для OpenAI
         """
-        if 0 <= progress <= 0.20:
-            return (
-                f"Студент имеет прогресс {progress * 100}%. Сгенерируй мотивирующее сообщение "
-                "с легким подзатыльником, которое поможет ему начать активнее учиться. "
-                "Важно быть настойчивым."
-            )
-        elif 0.20 < progress <= 0.5:
-            return (
-                f"Студент имеет прогресс {progress * 100}%. Сгенерируй мотивирующее сообщение, "
-                "которое отметит его старания и подбодрит делать больше."
-            )
-        elif 0.5 < progress <= 0.8:
-            return (
-                f"Студент имеет прогресс {progress * 100}%. Сгенерируй ободряющее сообщение, "
-                "подчеркивающее, что он молодец и уже близок к цели."
-            )
-        elif 0.8 < progress < 1:
-            return (
-                f"Студент имеет прогресс {progress * 100}%. Сгенерируй воодушевляющее сообщение, "
-                "подчеркивающее, что осталось совсем немного до полного завершения."
-            )
-        else:  # 100%
-            return (
-                "Студент выполнил 100% модуля! Сгенерируй радостное поздравление "
-                "с успешным завершением модуля."
-            )
-
+        print(f"Generating prompt for Delta Progress: {delta_progress}")
         
-    
+        if delta_progress > 3:
+            print("Case: High achiever")
+            return (
+                f"Student has Delta Progress = {delta_progress}. This means that he "
+                "is significantly ahead of the pace of the course. Generate an encouraging message, "
+                "which praises him for his excellent results and motivation to learn."
+            )
+        elif 0 <= delta_progress <= 3:
+            print("Case: On track")
+            return (
+                f"Student has Delta Progress = {delta_progress}. This means that he "
+                "is going exactly at the pace of the course. Generate a positive message, "
+                "which confirms that he is doing everything right and supports him."
+            )
+        elif -4 <= delta_progress < 0:
+            print("Case: Slight underperformer")
+            return (
+                f"Student has Delta Progress = {delta_progress}. This means that he "
+                "slightly behind the pace of the course. Generate a soft motivating message "
+                "with a light humorous rebuke that will encourage him to catch up."
+            )
+        elif -10 <= delta_progress < -4:
+            print("Case: Basic underperformer")
+            return (
+                f"Student has Delta Progress = {delta_progress}. This means that he "
+                "is lagging behind the pace of the course. Generate a half-joking message, "
+                "which will indicate the problem of lagging and the importance of solving it, "
+                "but at the same time support the student and say that it's okay and it could have been worse"
+            )
+        else:  # delta_progress < -10
+            return (
+                f"Student has Delta Progress = {delta_progress}. This means a critical "
+                "ag behind the pace of the course. Generate a strict but constructive message, "
+                "which will seriously indicate the catastrophism of the situation and the need for urgent "
+                "actions to remedy the situation. Add specific tips for organizing training."
+            )
+        

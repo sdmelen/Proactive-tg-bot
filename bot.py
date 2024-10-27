@@ -5,9 +5,10 @@ import pandas as pd
 import os, codecs, datetime
 from config.config import BotConfig
 from modules.excel_handler import ExcelHandler
+from modules.downloader import download_sheet
 
 # Состояния диалога
-WAITING_NAME = 1
+WAITING_EMAIL = 1
 
 class TelegramBot:
     def __init__(self, config: BotConfig):
@@ -15,11 +16,24 @@ class TelegramBot:
         Инициализация бота
         """
         self.config = config
+        # Сначала загружаем актуальные данные
+        self.update_sheet()
         self.excel_handler = ExcelHandler(config)
         gpt.api_key = config.gpt_key
         self.user_verified = {}
         self.history = self._load_history()
         self.role = self._load_role()
+
+    def update_sheet(self):
+        """
+        Обновление Excel файла из Google Sheets
+        """
+        try:
+            print("Updating data from Google Sheets...")
+            download_sheet()
+            print("Data update completed successfully")
+        except Exception as e:
+            print(f"Error updating data: {str(e)}")
 
     def _load_history(self):
         """Загрузка истории сообщений"""
@@ -39,7 +53,7 @@ class TelegramBot:
                 return file.read().strip()
         except Exception as e:
             print(f"Error loading role: {str(e)}")
-            return "Ты - дружелюбный помощник для студентов."
+            return "You are a friendly African student assistant"
 
     def get_gpt_response(self, messages: list) -> str:
         """
@@ -61,7 +75,7 @@ class TelegramBot:
         try:
             messages = [
                 {"role": "system", "content": self.role},
-                {"role": "user", "content": "Поприветствуй нового студента и попроси его представиться"}
+                {"role": "user", "content": "Greet the new student and ask him to introduce himself by specifying his email address, which was used when registering for the course"}
             ]
             
             response = self.get_gpt_response(messages)
@@ -69,24 +83,24 @@ class TelegramBot:
         except Exception as e:
             print(f"Start command error: {str(e)}")
             await update.message.reply_text(
-                "Привет! Я твой помощник в обучении. Пожалуйста, представься - "
-                "напиши свои имя и фамилию как в списке группы."
+                "Heyoo, fam! 🌍 Welcome to your learning journey! I'm your digital mentor - think of me as that tech-savvy cousin who's got your back in studies."
+                "Drop your course registration email below and let's get this show on the road! 💪"
             )
         
-        return WAITING_NAME
+        return WAITING_EMAIL
 
-    async def verify_name(self, update: Update, context) -> int:
-        """Проверка имени студента"""
+    async def verify_email(self, update: Update, context) -> int:
+        """Проверка email студента"""
         chat_id = update.message.chat_id
-        full_name = update.message.text.strip()
+        email = update.message.text.strip()
         started = datetime.datetime.now()
 
-        print(f"Verifying name: {full_name}")
-        student_data = self.excel_handler.get_student_progress(full_name)
+        print(f"Verifying email: {email}")
+        student_data = self.excel_handler.get_student_progress(email)
 
         if student_data:
-            print(f"Student found: {full_name}")
-            self.user_verified[chat_id] = {"name": full_name, "verified": True}
+            print(f"Student found: {email}")
+            self.user_verified[chat_id] = {"email": email, "verified": True}
 
             # Сохраняем сообщение пользователя в историю
             self.history = pd.concat([
@@ -97,13 +111,13 @@ class TelegramBot:
                     'user_id': update.message.from_user.id,
                     'role': 'user',
                     'created': update.message.date,
-                    'content': full_name
+                    'content': email
                 }])
             ], ignore_index=True)
 
             try:
                 # Генерируем промпт и получаем ответ от GPT
-                progress_prompt = self.excel_handler.generate_progress_prompt(student_data.progress)
+                progress_prompt = self.excel_handler.generate_progress_prompt(student_data.delta_progress)
                 messages = [
                     {"role": "system", "content": self.role},
                     {"role": "user", "content": progress_prompt}
@@ -127,28 +141,32 @@ class TelegramBot:
                 self.history.to_csv(os.getcwd() + '/history.csv', index=False)
 
                 await update.message.reply_text(
-                    f"Отлично! Я нашел тебя в базе.\n"
-                    f"Твой текущий прогресс: {student_data.progress}%\n\n"
+                    f"Level check complete! ✨.\n"
+                    f"Your Delta Progress score is showing: {student_data.delta_progress}\n\n"
+                    f"Think of Delta Progress like a race with your classmates - positive numbers mean you're leading the pack,"
+                    f"negative means you're behind the convoy. Time to know where you stand! 🏃‍♂️\n\n"
                     f"{response}"
                 )
 
             except Exception as e:
                 print(f"GPT Error during verification: {str(e)}")
                 await update.message.reply_text(
-                    f"Отлично! Я нашел тебя в базе.\n"
-                    f"Твой текущий прогресс: {student_data.progress * 100}%\n\n"
-                    "Продолжай в том же духе! Я здесь, чтобы помочь тебе в обучении."
+                    f"Level check complete! ✨..\n"
+                    f"Your Delta Progress score is showing: {student_data.delta_progress}\n\n"
+                    "Let's work together on your progress!"
+                    f"Think of Delta Progress like a race with your classmates - positive numbers mean you're leading the pack,"
+                    f"negative means you're behind the convoy. Time to know where you stand! 🏃‍♂️\n\n"
                 )
 
             return ConversationHandler.END
 
         else:
-            print(f"Student not found: {full_name}")
+            print(f"Student not found: {email}")
             await update.message.reply_text(
-                "Извини, но я не нашел такого имени в списке студентов. "
-                "Пожалуйста, проверь правильность написания и попробуй еще раз."
+                "I'm sorry, but I didn't find such an email in the list of students."
+                "Please check the spelling and try again."
             )
-            return WAITING_NAME
+            return WAITING_EMAIL
 
     async def handle_message(self, update: Update, context):
         """Обработка обычных сообщений после верификации"""
@@ -156,7 +174,8 @@ class TelegramBot:
         
         if chat_id not in self.user_verified or not self.user_verified[chat_id]["verified"]:
             await update.message.reply_text(
-                "Пожалуйста, сначала представьтесь с помощью команды /start"
+                "Please first introduce yourself using the /start command, "
+                "specifying your email address."
             )
             return
 
@@ -205,8 +224,21 @@ class TelegramBot:
         except Exception as e:
             print(f"Error in message handling: {str(e)}")
             await update.message.reply_text(
-                "Извините, произошла ошибка. Попробуйте повторить запрос позже."
+                "Sorry, an error has occurred. Try to repeat the request later."
             )
+
+    async def periodic_update(self, context):
+        """
+        Периодическое обновление данных
+        """
+        try:
+            # Обновляем таблицу
+            self.update_sheet()
+            # Обновляем данные в ExcelHandler
+            await self.excel_handler.update_data()
+            print(f"Scheduled update completed at {datetime.datetime.now()}")
+        except Exception as e:
+            print(f"Error in periodic update: {str(e)}")
 
     def run(self):
         """Запуск бота"""
@@ -216,7 +248,7 @@ class TelegramBot:
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', self.start)],
             states={
-                WAITING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.verify_name)]
+                WAITING_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.verify_email)]
             },
             fallbacks=[]
         )
@@ -225,7 +257,15 @@ class TelegramBot:
         application.add_handler(conv_handler)
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
-        # Запускаем бота
+        # Настраиваем периодическое обновление данных
+        job_queue = application.job_queue
+        # Запускаем обновление каждые 24 часа
+        job_queue.run_repeating(
+            self.periodic_update,
+            interval=datetime.timedelta(hours=24),
+            first=datetime.timedelta(seconds=0)  # Первый запуск сразу
+        )
+
         print('Запуск бота...')
         application.run_polling(1.0)
 
@@ -233,7 +273,7 @@ if __name__ == '__main__':
     config = BotConfig(
         bot_key='',
         gpt_key='',
-        excel_file_path='C:/Users/dbezz/Desktop/AUIMIT/Proactive-tg-bot/Аналитика.xlsx',
+        excel_file_path='C:/Users/HUAWEI/Desktop/py/Proactive-tg-bot/Аналитика.xlsx',
         role_file='role.txt',
         model="gpt-4o-mini",
         temperature=0.5,
