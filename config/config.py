@@ -10,5 +10,5 @@ class BotConfig:
     temperature: float = 0.5
     history_file: str = 'history.csv'
     role_file: str = 'role.txt'
-    update_interval: int = 24  # часы
+    update_interval: int = 1  # часы  
     excel_file_path: str = "C:/Users/HUAWEI/Desktop/py/Proactive-tg-bot/Аналитика.xlsx"

@@ -141,4 +141,3 @@ class ExcelHandler:
                 "which will seriously indicate the catastrophism of the situation and the need for urgent "
                 "actions to remedy the situation. Add specific tips for organizing training."
             )
-        

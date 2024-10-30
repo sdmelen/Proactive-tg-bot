@@ -4,7 +4,7 @@ import openai as gpt
 import pandas as pd
 import os, codecs, datetime
 from config.config import BotConfig
-from modules.excel_handler import ExcelHandler
+from modules.excel_handler import ExcelHandler, StudentData
 from modules.downloader import download_sheet
 
 # Состояния диалога
@@ -16,6 +16,9 @@ class TelegramBot:
         Инициализация бота
         """
         self.config = config
+        # Инициализация application
+        self.application = Application.builder().token(self.config.bot_key).build()
+        
         # Сначала загружаем актуальные данные
         self.update_sheet()
         self.excel_handler = ExcelHandler(config)
@@ -23,6 +26,34 @@ class TelegramBot:
         self.user_verified = {}
         self.history = self._load_history()
         self.role = self._load_role()
+
+        # Настраиваем обработчики
+        self._setup_handlers()
+        
+    def _setup_handlers(self):
+        """
+        Настройка обработчиков команд и сообщений
+        """
+        # Обработчик диалога верификации
+        conv_handler = ConversationHandler(
+            entry_points=[CommandHandler('start', self.start)],
+            states={
+                WAITING_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.verify_email)]
+            },
+            fallbacks=[]
+        )
+
+        # Добавляем обработчики
+        self.application.add_handler(conv_handler)
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+
+        # Настраиваем периодическое обновление
+        job_queue = self.application.job_queue
+        job_queue.run_repeating(
+            self.periodic_update,
+            interval=datetime.timedelta(minutes=self.config.update_interval),
+            first=datetime.timedelta(seconds=10)
+        )
 
     def update_sheet(self):
         """
@@ -229,17 +260,95 @@ class TelegramBot:
 
     async def periodic_update(self, context):
         """
-        Периодическое обновление данных
+        Периодическое обновление данных и отправка обновлений студентам
+        """
+        current_time = datetime.datetime.now().strftime("%H:%M:%S")
+        print(f"\n[{current_time}] Запуск периодического обновления...")
+        
+        try:
+            # Сохраняем предыдущие данные для сравнения
+            previous_data = self.excel_handler.students_data.copy()
+            
+            # Обновляем данные
+            print(f"[{current_time}] Загрузка новых данных...")
+            self.update_sheet()
+            await self.excel_handler.update_data()
+            
+            print(f"Верифицированные пользователи: {self.user_verified}")
+            
+            # Проходим по всем верифицированным пользователям
+            for chat_id, user_data in self.user_verified.items():
+                if user_data["verified"]:
+                    email = user_data["email"]
+                    print(f"Проверка обновлений для {email}")
+                    student_data = self.excel_handler.get_student_progress(email)
+                    
+                    if student_data:
+                        # Проверяем, изменился ли прогресс
+                        previous_progress = (
+                            previous_data[email].delta_progress 
+                            if email in previous_data 
+                            else None
+                        )
+                        
+                        current_progress = student_data.delta_progress
+                        print(f"Previous progress: {previous_progress}")
+                        print(f"Current progress: {current_progress}")
+                        
+                        if (previous_progress is None or 
+                            abs(current_progress - previous_progress) >= 0.01):  # учитываем небольшую погрешность
+                            print(f"[{current_time}] Отправка обновления для {email}")
+                            await self.send_progress_update(chat_id, student_data)
+                        else:
+                            print(f"[{current_time}] Прогресс не изменился для {email}")
+                    else:
+                        print(f"[{current_time}] Не найдены данные для {email}")
+            
+            print(f"[{current_time}] Периодическое обновление завершено")
+            
+        except Exception as e:
+            print(f"[{current_time}] Ошибка при периодическом обновлении: {str(e)}")
+            import traceback
+            print("Full error traceback:")
+            print(traceback.format_exc())
+    
+
+    async def send_progress_update(self, chat_id: int, student_data: StudentData) -> None:
+        """
+        Отправка обновления прогресса студенту
         """
         try:
-            # Обновляем таблицу
-            self.update_sheet()
-            # Обновляем данные в ExcelHandler
-            await self.excel_handler.update_data()
-            print(f"Scheduled update completed at {datetime.datetime.now()}")
+            # Генерируем промпт и получаем ответ от GPT
+            progress_prompt = self.excel_handler.generate_progress_prompt(student_data.delta_progress)
+            messages = [
+                {"role": "system", "content": self.role},
+                {"role": "user", "content": f"{progress_prompt} This is an automatic progress update, make the message more personalized."}
+            ]
+            
+            response = self.get_gpt_response(messages)
+            
+            # Формируем сообщение
+            message = (
+                "🔄 Progress Update!\n\n"
+                f"Your current Delta Progress: {student_data.delta_progress}\n\n"
+                f"{response}"
+            )
+            
+            # Отправляем сообщение
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=message
+            )
+            
+            print(f"Progress update sent to chat_id {chat_id}")
+            
         except Exception as e:
-            print(f"Error in periodic update: {str(e)}")
-
+            print(f"Error sending progress update to chat_id {chat_id}: {str(e)}")
+            # Добавляем более подробное логирование
+            import traceback
+            print("Full error traceback:")
+            print(traceback.format_exc())
+    
     def run(self):
         """Запуск бота"""
         application = Application.builder().token(self.config.bot_key).build()
@@ -262,19 +371,18 @@ class TelegramBot:
         # Запускаем обновление каждые 24 часа
         job_queue.run_repeating(
             self.periodic_update,
-            interval=datetime.timedelta(hours=24),
+            interval=datetime.timedelta(minutes=self.config.update_interval),  
             first=datetime.timedelta(seconds=0)  # Первый запуск сразу
         )
 
         print('Запуск бота...')
+        print(f'Настроено обновление данных каждую {self.config.update_interval} минуту')
         application.run_polling(1.0)
 
 if __name__ == '__main__':
     config = BotConfig(
-        bot_key='',
-        gpt_key='',
-        excel_file_path='C:/Users/HUAWEI/Desktop/py/Proactive-tg-bot/Аналитика.xlsx',
         role_file='role.txt',
+        update_interval=30,
         model="gpt-4o-mini",
         temperature=0.5,
         tail=6
