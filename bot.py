@@ -371,7 +371,7 @@ class TelegramBot:
         # Запускаем обновление каждые 24 часа
         job_queue.run_repeating(
             self.periodic_update,
-            interval=datetime.timedelta(minutes=self.config.update_interval),  
+            interval=datetime.timedelta(minutes=self.config.update_interval),
             first=datetime.timedelta(seconds=0)  # Первый запуск сразу
         )
 
@@ -381,6 +381,9 @@ class TelegramBot:
 
 if __name__ == '__main__':
     config = BotConfig(
+        bot_key='',
+        gpt_key='',
+        excel_file_path='C:/Users/dbezz/Desktop/AUIMIT/Proactive-tg-bot/Аналитика.xlsx',
         role_file='role.txt',
         update_interval=30,
         model="gpt-4o-mini",
