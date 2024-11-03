@@ -148,6 +148,8 @@ service_account.json
 
 # Pyre type checker
 .pyre/
+*.xlsx
+*.xls
 
 # pytype static type analyzer
 .pytype/
