@@ -1,11 +1,9 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler
 from telegram import Update
-import openai as gpt
 import pandas as pd
 import os, codecs, datetime
 from config.config import BotConfig
-from modules.excel_handler import ExcelHandler, StudentData
-from modules.downloader import download_sheet
+from modules.student_data_service import StudentDataService, StudentProgress
 from modules.gpt_service import GPTService
 
 # Состояния диалога
@@ -13,25 +11,60 @@ WAITING_EMAIL = 1
 
 class TelegramBot:
     def __init__(self, config: BotConfig):
-        """
-        Инициализация бота
-        """
+        # Инициализация бота
         self.config = config
         self.application = Application.builder().token(self.config.bot_key).build()
         
         # Инициализация сервисов
-        self.update_sheet()
-        self.excel_handler = ExcelHandler(config)
+        self.student_service = StudentDataService()
         self.gpt_service = GPTService(config)  # Добавляем GPT сервис
         self.user_verified = {}
         self.history = self._load_history()
         self.role = self._load_role()
         self._setup_handlers()
+        print('Запуск бота...')
+        print(f'Настроено обновление данных каждую {self.config.update_interval} минуту')
+        self.application.run_polling(1.0)
+    
+    def _generate_progress_prompt(self, expected_result: float) -> str:
+        """Генерация промпта на основе expected_result"""
+        if expected_result > 3:
+            return (
+                f"Student has Expected Result = {expected_result}. "
+                "Give praise using local expressions of excellence. "
+                "Challenge them to lift others as they rise. "
+                "Emphasize their role in community success."
+            )
+        elif 0 <= expected_result <= 3:
+            return (
+                f"Student has Expected Result = {expected_result}. "
+                "Acknowledge their steady progress with familiar encouragement. "
+                "Use local success stories as motivation. "
+                "Keep the energy positive and communal."
+            )
+        elif -4 <= expected_result < 0:
+            return (
+                f"Student has Expected Result = {expected_result}. "
+                "Use playful local banter to highlight issues. "
+                "Mix street-smart wisdom with academic advice. "
+                "Provide guidance with cultural context."
+            )
+        elif -10 <= expected_result < -4:
+            return (
+                f"Student has Expected Result = {expected_result}. "
+                "Get serious but maintain hope and brotherhood/sisterhood. "
+                "Draw parallels to local success stories who overcame challenges. "
+                "Push for immediate action with community support."
+            )
+        else:  # expected_result < -10
+            return (
+                f"Student has Expected Result = {expected_result}. "
+                "Show tough love like a concerned family member. "
+                "Express disappointment while affirming potential. "
+                "Demand action with cultural resonance."
+            )
         
     def _setup_handlers(self):
-        """
-        Настройка обработчиков команд и сообщений
-        """
         # Обработчик диалога верификации
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', self.start)],
@@ -53,17 +86,6 @@ class TelegramBot:
             first=datetime.timedelta(seconds=10)
         )
 
-    def update_sheet(self):
-        """
-        Обновление Excel файла из Google Sheets
-        """
-        try:
-            print("Updating data from Google Sheets...")
-            download_sheet()
-            print("Data update completed successfully")
-        except Exception as e:
-            print(f"Error updating data: {str(e)}")
-
     def _load_history(self):
         """Загрузка истории сообщений"""
         try:
@@ -84,21 +106,6 @@ class TelegramBot:
             print(f"Error loading role: {str(e)}")
             return "You are a friendly African student assistant"
 
-    def get_gpt_response(self, messages: list) -> str:
-        """
-        Получение ответа от OpenAI GPT (синхронная версия)
-        """
-        try:
-            response = gpt.ChatCompletion.create(
-                model=self.config.model,
-                messages=messages,
-                temperature=self.config.temperature
-            )
-            return response['choices'][0]['message']['content']
-        except Exception as e:
-            print(f"GPT Error: {str(e)}")
-            raise
-
     async def start(self, update: Update, context) -> int:
         """Обработчик команды /start"""
         try:
@@ -107,7 +114,7 @@ class TelegramBot:
                 {"role": "user", "content": "Greet the new student and ask him to introduce himself by specifying his email address, which was used when registering for the course"}
             ]
             
-            response = self.get_gpt_response(messages)
+            response = self.gpt_service.get_gpt_response(messages)
             await update.message.reply_text(response)
         except Exception as e:
             print(f"Start command error: {str(e)}")
@@ -119,73 +126,44 @@ class TelegramBot:
         return WAITING_EMAIL
 
     async def verify_email(self, update: Update, context) -> int:
-        """Проверка email студента"""
         chat_id = update.message.chat_id
         email = update.message.text.strip()
-        started = datetime.datetime.now()
-
-        print(f"Verifying email: {email}")
-        student_data = self.excel_handler.get_student_progress(email)
-
+        
+        # Используем новый сервис для проверки студента
+        student_data = self.student_service.get_student_progress(email)
+        
         if student_data:
             self.user_verified[chat_id] = {"email": email, "verified": True}
-
-            self.history = pd.concat([
-                self.history, 
-                pd.DataFrame.from_records([{
-                    'chat_id': chat_id,
-                    'message_id': update.message.message_id,
-                    'user_id': update.message.from_user.id,
-                    'role': 'user',
-                    'created': update.message.date,
-                    'content': email
-                }])
-            ], ignore_index=True)
-
+            
             try:
-                # Используем новый GPT сервис
-                progress_prompt = self.excel_handler.generate_progress_prompt(student_data.delta_progress)
+                # Генерируем промпт на основе expected_result вместо delta_progress
+                progress_prompt = self._generate_progress_prompt(student_data.expected_result)
                 messages = [
                     {"role": "system", "content": self.role},
                     {"role": "user", "content": progress_prompt}
                 ]
                 
                 response = self.gpt_service.get_gpt_response(messages)
-
-                self.history = pd.concat([
-                    self.history, 
-                    pd.DataFrame.from_records([{
-                        'chat_id': chat_id,
-                        'message_id': update.message.message_id + 1,
-                        'role': 'assistant',
-                        'created': update.message.date + (datetime.datetime.now() - started),
-                        'content': response
-                    }])
-                ], ignore_index=True)
-
-                self.history.to_csv(os.getcwd() + '/history.csv', index=False)
-
+                
                 await update.message.reply_text(
                     f"Level check complete! ✨\n"
-                    f"Your Delta Progress score is showing: {student_data.delta_progress}\n\n"
-                    f"Think of Delta Progress like a race with your classmates - positive numbers mean you're leading the pack,"
-                    f"negative means you're behind the convoy. Time to know where you stand! 🏃‍♂️\n\n"
+                    f"Your Progress: {student_data.progress}%\n"
+                    f"Expected Result: {student_data.expected_result}\n\n"
                     f"{response}"
                 )
-
+                
             except Exception as e:
-                print(f"GPT Error during verification: {str(e)}")
+                print(f"Error during verification: {str(e)}")
                 await update.message.reply_text(
-                    f"Level check complete! ✨\n"
-                    f"Your Delta Progress score is showing: {student_data.delta_progress}\n\n"
-                    "Let's work together on your progress!"
+                    "An error occurred. Please try again later."
                 )
-
+            
             return ConversationHandler.END
+            
         else:
             await update.message.reply_text(
-                "I'm sorry, but I didn't find such an email in the list of students. "
-                "Please check the spelling and try again."
+                "Email not found or student is not active. "
+                "Please check your email and try again."
             )
             return WAITING_EMAIL
         
@@ -246,78 +224,34 @@ class TelegramBot:
             )
 
     async def periodic_update(self, context):
-        """
-        Периодическое обновление данных и отправка обновлений студентам
-        """
-        current_time = datetime.datetime.now().strftime("%H:%M:%S")
-        print(f"\n[{current_time}] Запуск периодического обновления...")
-        
+        """Периодическое обновление данных"""
         try:
-            # Сохраняем предыдущие данные для сравнения
-            previous_data = self.excel_handler.students_data.copy()
-            
-            # Обновляем данные
-            print(f"[{current_time}] Загрузка новых данных...")
-            self.update_sheet()
-            await self.excel_handler.update_data()
-            
-            print(f"Верифицированные пользователи: {self.user_verified}")
-            
-            # Проходим по всем верифицированным пользователям
-            for chat_id, user_data in self.user_verified.items():
-                if user_data["verified"]:
-                    email = user_data["email"]
-                    print(f"Проверка обновлений для {email}")
-                    student_data = self.excel_handler.get_student_progress(email)
-                    
-                    if student_data:
-                        # Проверяем, изменился ли прогресс
-                        previous_progress = (
-                            previous_data[email].delta_progress 
-                            if email in previous_data 
-                            else None
-                        )
-                        
-                        current_progress = student_data.delta_progress
-                        print(f"Previous progress: {previous_progress}")
-                        print(f"Current progress: {current_progress}")
-                        
-                        if (previous_progress is None or 
-                            abs(current_progress - previous_progress) >= 0.01):  # учитываем небольшую погрешность
-                            print(f"[{current_time}] Отправка обновления для {email}")
-                            await self.send_progress_update(chat_id, student_data)
-                        else:
-                            print(f"[{current_time}] Прогресс не изменился для {email}")
-                    else:
-                        print(f"[{current_time}] Не найдены данные для {email}")
-            
-            print(f"[{current_time}] Периодическое обновление завершено")
-            
+            print("Updating student data...")
+            if self.student_service.update_data():
+                print("Student data updated successfully")
+            else:
+                print("Failed to update student data")
         except Exception as e:
-            print(f"[{current_time}] Ошибка при периодическом обновлении: {str(e)}")
-            import traceback
-            print("Full error traceback:")
-            print(traceback.format_exc())
+            print(f"Error during periodic update: {str(e)}")
     
 
-    async def send_progress_update(self, chat_id: int, student_data: StudentData) -> None:
-        """
-        Отправка обновления прогресса студенту
-        """
+    async def send_progress_update(self, chat_id: int, student_data: StudentProgress) -> None:
+        """Отправка обновления прогресса студенту"""
         try:
             # Генерируем промпт и получаем ответ от GPT
-            progress_prompt = self.excel_handler.generate_progress_prompt(student_data.delta_progress)
+            progress_prompt = self._generate_progress_prompt(student_data.expected_result)
             messages = [
                 {"role": "system", "content": self.role},
                 {"role": "user", "content": f"{progress_prompt} This is an automatic progress update, make the message more personalized."}
             ]
             
-            response = self.get_gpt_response(messages)
+            response = self.gpt_service.get_gpt_response(messages)
             
             # Формируем сообщение
             message = (
                 "🔄 Progress Update!\n\n"
-                f"Your current Delta Progress: {student_data.delta_progress}\n\n"
+                f"Your current Progress: {student_data.progress}%\n"
+                f"Expected Result: {student_data.expected_result}\n\n"
                 f"{response}"
             )
             
@@ -331,42 +265,11 @@ class TelegramBot:
             
         except Exception as e:
             print(f"Error sending progress update to chat_id {chat_id}: {str(e)}")
-            # Добавляем более подробное логирование
             import traceback
             print("Full error traceback:")
             print(traceback.format_exc())
     
-    def run(self):
-        """Запуск бота"""
-        application = Application.builder().token(self.config.bot_key).build()
-
-        # Обработчик диалога верификации
-        conv_handler = ConversationHandler(
-            entry_points=[CommandHandler('start', self.start)],
-            states={
-                WAITING_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.verify_email)]
-            },
-            fallbacks=[]
-        )
-
-        # Добавляем обработчики
-        application.add_handler(conv_handler)
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-
-        # Настраиваем периодическое обновление данных
-        job_queue = application.job_queue
-        # Запускаем обновление каждые 24 часа
-        job_queue.run_repeating(
-            self.periodic_update,
-            interval=datetime.timedelta(minutes=self.config.update_interval),
-            first=datetime.timedelta(seconds=0)  # Первый запуск сразу
-        )
-
-        print('Запуск бота...')
-        print(f'Настроено обновление данных каждую {self.config.update_interval} минуту')
-        application.run_polling(1.0)
 
 if __name__ == '__main__':
     config = BotConfig()
     bot = TelegramBot(config)
-    bot.run()

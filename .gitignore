@@ -144,12 +144,9 @@ history.csv
 .mypy_cache/
 .dmypy.json
 dmypy.json
-service_account.json
 
 # Pyre type checker
 .pyre/
-*.xlsx
-*.xls
 
 # pytype static type analyzer
 .pytype/
