@@ -2,13 +2,8 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Dict
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+import requests
 from bs4 import BeautifulSoup
-import time
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,57 +19,48 @@ class StudentProgress:
 
 class StudentDataService:
     def __init__(self):
-        self.login_url = "https://aumit.us/login-page-um/"
+        """Инициализация сервиса с данными для авторизации"""
+        self.login_url = "https://aumit.us/wp-login.php?itsec-hb-token=amazing-aumit"
         self.data_url = "https://aumit.us/studresult/"
         self.username = os.getenv('AUMIT_USERNAME')
         self.password = os.getenv('AUMIT_PASSWORD')
         self.students_data: Dict[str, StudentProgress] = {}
+        self.session = requests.Session()
 
     def update_data(self) -> bool:
         """Обновление данных студентов"""
         try:
-            #Опции Chrome
-            chrome_options = Options()
-            chrome_options.add_argument("--headless")  # Запуск браузера в фоновом режиме
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])  # Отключение логов DevTools
-            
-            # Инициализация драйвера с опциями
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(
-                service=service,
-                options=chrome_options
-            )
+            # Подготовка данных для авторизации
+            login_payload = {
+                "log": self.username,
+                "pwd": self.password,
+                "wp-submit": "Log In",
+                "testcookie": "1"
+            }
 
-            try:
-                # Логин
-                driver.get(self.login_url)
-                driver.find_element(By.ID, "username-1098").send_keys(self.username)
-                driver.find_element(By.ID, "user_password-1098").send_keys(self.password)
-                driver.find_element(By.ID, "um-submit-btn").click()
-                time.sleep(5)
+            # Авторизация
+            login_response = self.session.post(self.login_url, data=login_payload)
+            if not login_response.ok or "incorrect" in login_response.text:
+                print("Authentication failed")
+                return False
 
-                # Получение данных
-                driver.get(self.data_url)
-                time.sleep(3)
-                page_source = driver.page_source
+            # Получение данных
+            page_response = self.session.get(self.data_url)
+            if page_response.status_code != 200:
+                print(f"Failed to get data page. Status: {page_response.status_code}")
+                return False
 
-                # Парсинг данных
-                self._parse_data(page_source)
-                return True
-
-            finally:
-                driver.quit()
+            # Парсинг данных
+            self._parse_data(page_response.content)
+            return True
 
         except Exception as e:
             print(f"Error updating student data: {str(e)}")
             return False
 
-    def _parse_data(self, page_source: str):
+    def _parse_data(self, content: bytes) -> None:
         """Парсинг HTML и обновление данных студентов"""
-        soup = BeautifulSoup(page_source, 'html.parser')
+        soup = BeautifulSoup(content, 'html.parser')
         tables = soup.find_all("div", {"class": "lp-student-progress-table"})
         
         # Очищаем текущие данные
@@ -83,17 +69,17 @@ class StudentDataService:
         columns = ["Email", "Start Date", "End Date", "Progress (%)", "Expected result"]
 
         for table_div in tables:
-            course_id = table_div.get("data-course-id")
+            course_id = table_div.get("data-course-id", "Unknown")
             table = table_div.find("table", {"class": "lp-progress-table"})
             
             if not table:
                 continue
 
             # Получаем индексы столбцов
-            headers = table.find("tr").find_all("th")
+            header_cells = table.find("tr").find_all("th")
             col_indices = {
                 header.get_text(strip=True): idx 
-                for idx, header in enumerate(headers)
+                for idx, header in enumerate(header_cells)
                 if header.get_text(strip=True) in columns
             }
 
@@ -104,7 +90,9 @@ class StudentDataService:
             # Обрабатываем данные
             for row in table.find_all("tr")[1:]:
                 cells = row.find_all("td")
-                
+                if len(cells) < len(col_indices):
+                    continue
+
                 email = cells[col_indices["Email"]].get_text(strip=True)
                 start_date = cells[col_indices["Start Date"]].get_text(strip=True)
                 end_date = cells[col_indices["End Date"]].get_text(strip=True)
@@ -118,14 +106,20 @@ class StudentDataService:
                     continue
 
                 # Сохраняем данные студента
-                self.students_data[email] = StudentProgress(
-                    email=email,
-                    start_date=start_date if start_date != "N/A" else None,
-                    end_date=end_date if end_date != "N/A" else None,
-                    progress=float(progress.replace("%", "")) if progress else 0,
-                    expected_result=float(expected_result) if expected_result else 0,
-                    course_id=course_id
-                )
+                try:
+                    progress_value = float(progress.replace("%", "")) if progress else 0
+                    expected_value = float(expected_result) if expected_result else 0
+                    
+                    self.students_data[email.lower()] = StudentProgress(
+                        email=email,
+                        start_date=start_date if start_date != "N/A" else None,
+                        end_date=end_date if end_date != "N/A" else None,
+                        progress=progress_value,
+                        expected_result=expected_value,
+                        course_id=course_id
+                    )
+                except (ValueError, TypeError) as e:
+                    print(f"Error processing student data for {email}: {str(e)}")
 
     def get_student_progress(self, email: str) -> Optional[StudentProgress]:
         """Получение прогресса студента по email"""
