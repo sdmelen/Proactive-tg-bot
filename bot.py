@@ -105,6 +105,7 @@ class TelegramBot:
         except Exception as e:
             print(f"Error loading role: {str(e)}")
             return "You are a friendly African student assistant"
+    
 
     async def start(self, update: Update, context) -> int:
         """Обработчик команды /start"""
@@ -265,9 +266,6 @@ class TelegramBot:
             
         except Exception as e:
             print(f"Error sending progress update to chat_id {chat_id}: {str(e)}")
-            import traceback
-            print("Full error traceback:")
-            print(traceback.format_exc())
     
 
 if __name__ == '__main__':
