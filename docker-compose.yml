@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  aumit_bot:
+    container_name: aumit_bot
+    build: .
+    restart: always
+    profiles:
+      - app
+    env_file:
+      - .env
+    networks:
+      - aumit_network
+
+  aumit_db:
+    image: postgres:latest
+    container_name: aumit_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
+    volumes:
+      - bot-db-volume:/var/lib/postgresql/data
+    networks:
+      - aumit_network
+    # заскомитить если нужно работать локально 
+    # ports:
+    #   - '${DATABASE_PORT}:${DATABASE_PORT}'
+
+networks:
+  aumit_network:
+    
+volumes:
+  bot-db-volume:
+   
+
+# start (rebuild)
+# sudo docker compose --env-file ./.env --profile app up --build -d // запуск всего стека в докере. Поднимает бот и бд в докере.
+# sudo docker compose --env-file ./.env up --build -d // запуск базы в докере
+
+#db viewer/dviewer/orm
