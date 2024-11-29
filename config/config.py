@@ -15,4 +15,9 @@ class BotConfig:
     temperature: float = 0.5
     history_file: str = 'history.csv'
     role_file: str = 'role.txt'
-    update_interval: int = 5 #в минутах
+    update_interval: int = 10 #в минутах
+    
+    log_directory: str = "logs"
+    log_level: str = os.getenv('LOG_LEVEL', 'INFO')
+    max_log_size: int = 5 * 1024 * 1024  # 5MB
+    backup_count: int = 5

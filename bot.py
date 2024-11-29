@@ -5,63 +5,91 @@ import os, codecs, datetime
 from config.config import BotConfig
 from modules.student_data_service import StudentDataService, StudentProgress
 from modules.gpt_service import GPTService
+from modules.logger import BotLogger
 
 # Состояния диалога
 WAITING_EMAIL = 1
 
 class TelegramBot:
     def __init__(self, config: BotConfig):
-        # Инициализация бота
-        self.config = config
-        self.application = Application.builder().token(self.config.bot_key).build()
+        # Инициализация логгера
+        self.logger = BotLogger(config.log_directory)
+        self.logger.log_bot_startup(config.__dict__)
         
-        # Инициализация сервисов
-        self.student_service = StudentDataService()
-        self.gpt_service = GPTService(config)  # Добавляем GPT сервис
+        # Инициализация Telegram приложения
+        self.application = Application.builder().token(config.bot_key).build()
+        
+        # Инициализация конфигурации
+        self.config = config
+        
+        # Инициализация сервисов с передачей логгера
+        self.student_service = StudentDataService(self.logger)
+        self.gpt_service = GPTService(config, self.logger)
+        
+        # Инициализация состояния и данных
         self.user_verified = {}
         self.history = self._load_history()
         self.role = self._load_role()
+        
+        # Настройка обработчиков
         self._setup_handlers()
+        
+        # Логирование успешного запуска
+        self.logger.logger.info('Bot initialization completed successfully')
         print('Запуск бота...')
         print(f'Настроено обновление данных каждую {self.config.update_interval} минуту')
+        
+        # Запуск бота
         self.application.run_polling(1.0)
     
     def _generate_progress_prompt(self, expected_result: float) -> str:
         """Генерация промпта на основе expected_result"""
         if expected_result > 3:
             return (
-                f"Student has Expected Result = {expected_result}. "
-                "Give praise using local expressions of excellence. "
-                "Challenge them to lift others as they rise. "
-                "Emphasize their role in community success."
+                #f"Student has Expected Result = {expected_result}. "
+                "Student has Result = Superior"
+                "They are EXCELLING! 🌟 Act extremely excited and proud! "
+                "Use phrases like 'You're absolutely crushing it!' and 'You're becoming a legend!' "
+                "Compare them to successful African tech leaders. "
+                "Your tone should be energetic and thrilled - this student is a future leader. "
+                "Push them to become a mentor for others."
             )
         elif 0 <= expected_result <= 3:
             return (
-                f"Student has Expected Result = {expected_result}. "
-                "Acknowledge their steady progress with familiar encouragement. "
-                "Use local success stories as motivation. "
-                "Keep the energy positive and communal."
+                "Student has Result = On track"
+                "They are ON TRACK! 💪 Be genuinely positive and encouraging. "
+                "Use phrases like 'Steady progress!' and 'You're building something great!' "
+                "Compare their journey to successful African startups that grew step by step. "
+                "Your tone should be warm and supportive - they're doing things right. "
+                "Encourage them to maintain this momentum."
             )
         elif -4 <= expected_result < 0:
             return (
-                f"Student has Expected Result = {expected_result}. "
-                "Use playful local banter to highlight issues. "
-                "Mix street-smart wisdom with academic advice. "
-                "Provide guidance with cultural context."
+                f"Student has Result = Small Problems. "
+                "They are FALLING BEHIND! ⚠️ Use light warning tone with friendly teasing. "
+                "Use phrases like 'Yo, what's happening?' and 'Time to wake up!' "
+                "Reference how African tech requires constant hustle and focus. "
+                "Your tone should be like a friend who notices their buddy slacking off. "
+                "Make them feel slightly uncomfortable but in a friendly way."
             )
         elif -10 <= expected_result < -4:
             return (
-                f"Student has Expected Result = {expected_result}. "
-                "Get serious but maintain hope and brotherhood/sisterhood. "
-                "Draw parallels to local success stories who overcame challenges. "
-                "Push for immediate action with community support."
+                f"Student has Expected Result = Problems. "
+                "They are SERIOUSLY BEHIND! ⛔ Show strong concern and urgency. "
+                "Use phrases like 'This is a serious wake-up call' and 'We need to turn this around NOW.' "
+                "Reference African success stories that started from difficult situations. "
+                "Your tone should be like a concerned elder sibling - mix care with tough love. "
+                "Create a sense of urgency while offering specific steps to improve."
             )
         else:  # expected_result < -10
             return (
-                f"Student has Expected Result = {expected_result}. "
-                "Show tough love like a concerned family member. "
-                "Express disappointment while affirming potential. "
-                "Demand action with cultural resonance."
+                f"Student has Expected Result = Critical Gap. "
+                "This is a CRITICAL SITUATION! 🚨 Show maximum concern and authority. "
+                "Use phrases like 'This stops NOW' and 'Your future cannot wait'. "
+                "Speak with the authority of an African elder who sees their child heading towards failure. "
+                "Your tone should be deeply concerned but not giving up - tough love at maximum. "
+                "Demand immediate change while expressing belief in their potential. "
+                "Make them understand this is a defining moment in their journey."
             )
         
     def _setup_handlers(self):
@@ -109,6 +137,18 @@ class TelegramBot:
 
     async def start(self, update: Update, context) -> int:
         """Обработчик команды /start"""
+        chat_id = update.message.chat_id
+        
+        # Проверяем, верифицирован ли уже этот пользователь
+        if chat_id in self.user_verified and self.user_verified[chat_id]["verified"]:
+            current_email = self.user_verified[chat_id]["email"]
+            self.logger.logger.warning(f"Attempt to re-verify already verified user. Chat ID: {chat_id}, Current email: {current_email}")
+            await update.message.reply_text(
+                f"You are already verified with email: {current_email}\n"
+                "You cannot change your email once verified. If you need to change your email, please contact support."
+            )
+            return ConversationHandler.END
+            
         try:
             messages = [
                 {"role": "system", "content": self.role},
@@ -118,7 +158,7 @@ class TelegramBot:
             response = self.gpt_service.get_gpt_response(messages)
             await update.message.reply_text(response)
         except Exception as e:
-            print(f"Start command error: {str(e)}")
+            self.logger.logger.error(f"Start command error: {str(e)}")
             await update.message.reply_text(
                 "Heyoo, fam! 🌍 Welcome to your learning journey! I'm your digital mentor - think of me as that tech-savvy cousin who's got your back in studies."
                 "Drop your course registration email below and let's get this show on the road! 💪"
@@ -128,14 +168,22 @@ class TelegramBot:
 
     async def verify_email(self, update: Update, context) -> int:
         chat_id = update.message.chat_id
-        email = update.message.text.strip()
+        email = update.message.text.strip().lower()
         
-        # Используем новый сервис для проверки студента
+        for existing_chat_id, user_data in self.user_verified.items():
+            if user_data["verified"] and user_data["email"] == email and existing_chat_id != chat_id:
+                self.logger.logger.warning(f"Attempt to use already registered email. Chat ID: {chat_id}, Email: {email}")
+                await update.message.reply_text(
+                    "This email is already registered with another user. "
+                    "If you believe this is an error, please contact support."
+                )
+                return WAITING_EMAIL
+        
         student_data = self.student_service.get_student_progress(email)
         
         if student_data:
             self.user_verified[chat_id] = {"email": email, "verified": True}
-            
+            self.logger.log_user_verification(chat_id, email, True)
             try:
                 # Генерируем промпт на основе expected_result вместо delta_progress
                 progress_prompt = self._generate_progress_prompt(student_data.expected_result)
@@ -143,13 +191,11 @@ class TelegramBot:
                     {"role": "system", "content": self.role},
                     {"role": "user", "content": progress_prompt}
                 ]
-                
                 response = self.gpt_service.get_gpt_response(messages)
                 
                 await update.message.reply_text(
                     f"Level check complete! ✨\n"
-                    f"Your Progress: {student_data.progress}%\n"
-                    f"Expected Result: {student_data.expected_result}\n\n"
+                    #f"Result: {student_data.expected_result}\n\n"
                     f"{response}"
                 )
                 
@@ -248,11 +294,11 @@ class TelegramBot:
             
             response = self.gpt_service.get_gpt_response(messages)
             
+            
             # Формируем сообщение
             message = (
                 "🔄 Progress Update!\n\n"
-                f"Your current Progress: {student_data.progress}%\n"
-                f"Expected Result: {student_data.expected_result}\n\n"
+                #f"Result: {student_data.expected_result}\n\n"
                 f"{response}"
             )
             

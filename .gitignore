@@ -33,6 +33,7 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+logs/
 
 # Unit test / coverage reports
 htmlcov/
@@ -137,7 +138,6 @@ venv.bak/
 
 # mkdocs documentation
 /site
-данные.txt
 history.csv
 
 # mypy

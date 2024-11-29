@@ -1,19 +1,17 @@
 import requests
 from typing import List, Dict, Any
 from config.config import BotConfig
+from .logger import BotLogger
 
 class GPTService:
-    def __init__(self, config: BotConfig):
+    def __init__(self, config: BotConfig, logger: BotLogger):
         self.config = config
-        self.headers = {
-            'Authorization': f"Bearer {config.gpt_key}"
-        }
+        self.headers = {'Authorization': f"Bearer {config.gpt_key}"}
+        self.logger = logger
 
     def get_gpt_response(self, messages: List[Dict[str, str]], temperature: float = None) -> str:
-        """
-        Получение ответа от GPT через прокси-сервер
-        """
         try:
+            self.logger.logger.debug("Preparing GPT request")
             temp = temperature if temperature is not None else self.config.temperature
             
             data = {
@@ -21,6 +19,8 @@ class GPTService:
                 'model': self.config.model,
                 'temperature': temp,
             }
+            
+            self.logger.logger.debug(f"Sending request to GPT proxy: {self.config.openai_proxy_host}")
             
             response = requests.post(
                 url=f'{self.config.openai_proxy_host}get-gpt-answer/',
@@ -30,11 +30,13 @@ class GPTService:
             )
             
             if response.status_code == 200 and response.json().get('success'):
+                self.logger.logger.info("Successfully received GPT response")
                 return response.json().get('answer')
             else:
-                print(f'Ошибка при запросе к GPT прокси: {response.status_code}, {response.text}')
-                raise Exception(f'Неудачный запрос к GPT! STATUS_CODE: {response.status_code}')
+                error_msg = f'GPT proxy error: {response.status_code}, {response.text}'
+                self.logger.logger.error(error_msg)
+                raise Exception(error_msg)
                 
         except Exception as e:
-            print(f"GPT Error: {str(e)}")
+            self.logger.logger.error(f"GPT Error: {str(e)}", exc_info=True)
             raise
