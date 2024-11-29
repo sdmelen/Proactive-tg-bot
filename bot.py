@@ -15,6 +15,10 @@ class TelegramBot:
         # Инициализация логгера
         self.logger = BotLogger(config.log_directory)
         self.logger.log_bot_startup(config.__dict__)
+
+        # Инициализация хранения верифицированных пользователей
+        self.verified_users_file = 'verified_users.csv'
+        self.user_verified = self._load_verified_users()
         
         # Инициализация Telegram приложения
         self.application = Application.builder().token(config.bot_key).build()
@@ -42,9 +46,73 @@ class TelegramBot:
         # Запуск бота
         self.application.run_polling(1.0)
     
+    def _load_verified_users(self) -> dict:
+        """Загрузка верифицированных пользователей из файла"""
+        try:
+            if os.path.exists(self.verified_users_file):
+                df = pd.read_csv(self.verified_users_file)
+                
+                # Проверяем уникальность email и chat_id
+                if df['email'].duplicated().any():
+                    self.logger.logger.error("Duplicate emails found in verified_users.csv")
+                    # Оставляем только первые вхождения для каждого email
+                    df = df.drop_duplicates(subset=['email'], keep='first')
+                
+                if df['chat_id'].duplicated().any():
+                    self.logger.logger.error("Duplicate chat_ids found in verified_users.csv")
+                    # Оставляем только первые вхождения для каждого chat_id
+                    df = df.drop_duplicates(subset=['chat_id'], keep='first')
+                
+                verified_users = {
+                    int(row['chat_id']): {
+                        'email': row['email'],
+                        'verified': row['verified']
+                    }
+                    for _, row in df.iterrows()
+                }
+                
+                self.logger.logger.info(f"Loaded {len(verified_users)} verified users")
+                return verified_users
+                
+            return {}
+        except Exception as e:
+            self.logger.logger.error(f"Error loading verified users: {str(e)}")
+            return {}
+
+    def _save_verified_users(self):
+        """Сохранение верифицированных пользователей в файл"""
+        try:
+            df = pd.DataFrame([
+                {
+                    'chat_id': chat_id,
+                    'email': data['email'],
+                    'verified': data['verified']
+                }
+                for chat_id, data in self.user_verified.items()
+            ])
+            df.to_csv(self.verified_users_file, index=False)
+            self.logger.logger.info("Verified users saved successfully")
+        except Exception as e:
+            self.logger.logger.error(f"Error saving verified users: {str(e)}")
+
+    def _get_status_level(self, expected_result: float) -> str:
+        """Определение статуса на основе expected_result"""
+        if expected_result > 3:
+            return "Superior"
+        elif 0 <= expected_result <= 3:
+            return "On track"
+        elif -4 <= expected_result < 0:
+            return "Small Problems"
+        elif -10 <= expected_result < -4:
+            return "Problems"
+        else:  # expected_result < -10
+            return "Critical Gap"
+
     def _generate_progress_prompt(self, expected_result: float) -> str:
         """Генерация промпта на основе expected_result"""
-        if expected_result > 3:
+
+        status = self._get_status_level(expected_result)
+        if status == "Superior":
             return (
                 #f"Student has Expected Result = {expected_result}. "
                 "Student has Result = Superior"
@@ -54,7 +122,7 @@ class TelegramBot:
                 "Your tone should be energetic and thrilled - this student is a future leader. "
                 "Push them to become a mentor for others."
             )
-        elif 0 <= expected_result <= 3:
+        elif status == "On track":
             return (
                 "Student has Result = On track"
                 "They are ON TRACK! 💪 Be genuinely positive and encouraging. "
@@ -63,7 +131,7 @@ class TelegramBot:
                 "Your tone should be warm and supportive - they're doing things right. "
                 "Encourage them to maintain this momentum."
             )
-        elif -4 <= expected_result < 0:
+        elif status == "Small Problems":
             return (
                 f"Student has Result = Small Problems. "
                 "They are FALLING BEHIND! ⚠️ Use light warning tone with friendly teasing. "
@@ -72,16 +140,16 @@ class TelegramBot:
                 "Your tone should be like a friend who notices their buddy slacking off. "
                 "Make them feel slightly uncomfortable but in a friendly way."
             )
-        elif -10 <= expected_result < -4:
+        elif status == "Problems":
             return (
                 f"Student has Expected Result = Problems. "
-                "They are SERIOUSLY BEHIND! ⛔ Show strong concern and urgency. "
-                "Use phrases like 'This is a serious wake-up call' and 'We need to turn this around NOW.' "
+                "They are BEHIND! ⛔ Show concern and urgency. "
+                "Use phrases like 'This is a serious wake-up call' and 'We need to turn this around now.' "
                 "Reference African success stories that started from difficult situations. "
                 "Your tone should be like a concerned elder sibling - mix care with tough love. "
                 "Create a sense of urgency while offering specific steps to improve."
             )
-        else:  # expected_result < -10
+        else:  # status == Critical Gap
             return (
                 f"Student has Expected Result = Critical Gap. "
                 "This is a CRITICAL SITUATION! 🚨 Show maximum concern and authority. "
@@ -142,7 +210,6 @@ class TelegramBot:
         # Проверяем, верифицирован ли уже этот пользователь
         if chat_id in self.user_verified and self.user_verified[chat_id]["verified"]:
             current_email = self.user_verified[chat_id]["email"]
-            self.logger.logger.warning(f"Attempt to re-verify already verified user. Chat ID: {chat_id}, Current email: {current_email}")
             await update.message.reply_text(
                 f"You are already verified with email: {current_email}\n"
                 "You cannot change your email once verified. If you need to change your email, please contact support."
@@ -170,22 +237,34 @@ class TelegramBot:
         chat_id = update.message.chat_id
         email = update.message.text.strip().lower()
         
+        # Проверяем, не верифицирован ли уже этот chat_id
+        if chat_id in self.user_verified and self.user_verified[chat_id]["verified"]:
+            current_email = self.user_verified[chat_id]["email"]
+            await update.message.reply_text(
+                f"Your Telegram account is already verified with email: {current_email}\n"
+                "You cannot change your email once verified."
+            )
+            return ConversationHandler.END
+
+        # Проверяем, не используется ли уже этот email
         for existing_chat_id, user_data in self.user_verified.items():
-            if user_data["verified"] and user_data["email"] == email and existing_chat_id != chat_id:
-                self.logger.logger.warning(f"Attempt to use already registered email. Chat ID: {chat_id}, Email: {email}")
+            if user_data["verified"] and user_data["email"] == email:
                 await update.message.reply_text(
-                    "This email is already registered with another user. "
+                    "This email is already verified with another Telegram account.\n"
+                    "Each email can only be used with one Telegram account.\n"
                     "If you believe this is an error, please contact support."
                 )
                 return WAITING_EMAIL
-        
+
+        # Проверяем существование студента
         student_data = self.student_service.get_student_progress(email)
         
         if student_data:
             self.user_verified[chat_id] = {"email": email, "verified": True}
+            self._save_verified_users()
             self.logger.log_user_verification(chat_id, email, True)
             try:
-                # Генерируем промпт на основе expected_result вместо delta_progress
+                status = self._get_status_level(student_data.expected_result)
                 progress_prompt = self._generate_progress_prompt(student_data.expected_result)
                 messages = [
                     {"role": "system", "content": self.role},
@@ -195,7 +274,7 @@ class TelegramBot:
                 
                 await update.message.reply_text(
                     f"Level check complete! ✨\n"
-                    #f"Result: {student_data.expected_result}\n\n"
+                    f"Your status = {status}\n\n"
                     f"{response}"
                 )
                 
@@ -219,6 +298,9 @@ class TelegramBot:
         """Обработка обычных сообщений"""
         chat_id = update.message.chat_id
         
+        if not self.user_verified:
+            self.user_verified = self._load_verified_users()
+
         if chat_id not in self.user_verified or not self.user_verified[chat_id]["verified"]:
             await update.message.reply_text(
                 "Please first introduce yourself using the /start command."
@@ -286,6 +368,7 @@ class TelegramBot:
         """Отправка обновления прогресса студенту"""
         try:
             # Генерируем промпт и получаем ответ от GPT
+            status = self._get_status_level(student_data.expected_result)
             progress_prompt = self._generate_progress_prompt(student_data.expected_result)
             messages = [
                 {"role": "system", "content": self.role},
@@ -298,7 +381,7 @@ class TelegramBot:
             # Формируем сообщение
             message = (
                 "🔄 Progress Update!\n\n"
-                #f"Result: {student_data.expected_result}\n\n"
+                f"Your status = {status}\n\n"
                 f"{response}"
             )
             
